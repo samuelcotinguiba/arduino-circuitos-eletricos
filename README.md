@@ -27,6 +27,56 @@ A versão Python foi validada no macOS. Os iniciadores e a seleção do navegado
 
 Se a placa já estiver com esse firmware, não precisa carregá-lo novamente para usar o iniciador Python. O navegador exige a seleção da porta por ação do usuário. A abertura da USB costuma reiniciar o Uno. A simulação e a apresentação funcionam sem placa; o controle físico requer USB e Chrome/Edge no computador.
 
+## Como a lógica funciona: Uno sozinho e com o painel
+
+**O Uno é a própria placa Arduino.** Aqui, a diferença é entre usar a placa sozinha, com alimentação e circuito montado, e usar essa mesma placa conectada ao painel no computador. Nos dois casos, quem decide as fases e aciona os LEDs físicos é o programa `.ino` gravado no Uno.
+
+### Uno sozinho, sem o painel
+
+Depois de carregar `ControleTrafego/ControleTrafego.ino`, a placa executa o controle sempre que recebe alimentação. Não precisa manter a IDE Arduino, o Python ou o navegador abertos. Sem o computador, use uma alimentação adequada para o Uno e mantenha o circuito conectado.
+
+Ao ligar ou reiniciar, o firmware configura os pinos, carrega os tempos válidos da EEPROM (ou os padrões do programa) e começa com ambas as vias vermelhas. Com os tempos padrão, espera 2 segundos e libera a via A. Depois repete este ciclo:
+
+| Fase | Via A | Via B | Duração padrão |
+| --- | --- | --- | --- |
+| 1 | Verde | Vermelho | 8 s |
+| 2 | Amarelo | Vermelho | 3 s |
+| 3 | Vermelho | Vermelho | 2 s |
+| 4 | Vermelho | Verde | 8 s |
+| 5 | Vermelho | Amarelo | 3 s |
+| 6 | Vermelho | Vermelho | 2 s |
+
+O ciclo completo dura 26 segundos e retorna à fase 1. Os LEDs de pedestres acendem quando a respectiva via está vermelha, inclusive nos intervalos em que ambas estão vermelhas.
+
+A lógica usa uma **máquina de estados**: cada fase guarda as cores, a duração e o instante de entrada. A função `loop()` verifica os botões, recebe eventuais comandos seriais e compara o tempo de `millis()` com a duração da fase. Ao terminar o tempo, passa à próxima fase. Não usa `delay()` para esperar a fase terminar; assim, continua lendo os botões durante a contagem.
+
+Os botões físicos D11 (A) e D12 (B) solicitam prioridade. A leitura precisa ficar estável por 20 ms para filtrar oscilações do contato. Quando um pedido é aceito:
+
+1. Se há uma via verde ou amarela, ela passa por uma fase amarela de 3 s. Se ambas já estão vermelhas, essa etapa é pulada.
+2. Ambas ficam vermelhas por 5 s de preparação.
+3. A via solicitada recebe verde por 10 s, mantendo a outra vermelha.
+4. Sem outro pedido na fila, ambas voltam ao vermelho pelo intervalo normal de 2 s e o ciclo libera a via oposta à última atendida.
+
+Se a outra via pedir prioridade durante a emergência, o pedido fica na fila. Ao terminar o atendimento atual, o firmware faz amarelo, preparação com ambas vermelhas e verde para a via da fila. Repetir o pedido da via já atendida não reinicia o tempo. Se os dois botões ficam pressionados juntos, a placa cancela a fila e mantém ambas vermelhas por 5 s de conflito; depois retoma pelo intervalo normal. É necessário soltar os dois botões para permitir novos pedidos.
+
+### Uno conectado ao painel por USB
+
+**A mesma máquina de estados continua rodando no Uno.** O painel acrescenta visualização e comandos: o navegador usa Web Serial para conversar diretamente com a placa a 115200 baud. O `app.py` serve a interface e os arquivos; a contagem das fases físicas fica no firmware.
+
+A placa envia seu estado a cada 250 ms, incluindo cores, fase, tempo restante e fila. O painel mostra essas leituras e permite solicitar prioridade A/B, alterar os sete tempos, salvar na EEPROM, restaurar os padrões e pedir parada ou retomada. Os comandos são validados pelo firmware; os botões físicos continuam funcionando, respeitando os bloqueios de conflito e parada.
+
+Ao pedir **parada**, a via acesa passa pelo amarelo e ambas ficam vermelhas até o comando de retomada. A parada cancela a fila e bloqueia prioridades. Ao **retomar**, a placa cumpre o intervalo normal e libera a via oposta à última que esteve verde.
+
+Alterar os tempos aplica os novos valores às próximas entradas de fase, sem encurtar a fase em andamento. **Aplicar na RAM** mantém os valores enquanto a placa não reiniciar; **salvar na EEPROM** permite recuperá-los após desligar e ligar, desde que sejam válidos e compatíveis com o perfil do firmware.
+
+Fechar o painel ou perder a comunicação não envia uma parada automática: enquanto continuar alimentado, o Uno segue no estado em que estava, executando as transições previstas. Se estava pausado, permanece com ambas vermelhas. Se retirar o cabo também cortar a alimentação, a placa desliga. Ao religar, começa pela sequência de inicialização; fase, fila e parada não são salvas na EEPROM. Abrir a conexão serial também costuma reiniciar o Uno.
+
+### Painel sem placa e código original
+
+Sem conexão USB, o modo de demonstração simula a lógica no JavaScript do navegador. Os comandos alteram a simulação e não acionam LEDs físicos nem gravam a EEPROM de uma placa. A apresentação também pode mostrar exemplos simulados enquanto há uma placa conectada; selecione **Acompanhar Arduino** para visualizar os estados reais no diagrama.
+
+O arquivo `painel/original.ino` é a versão original preservada para consulta e comparação. Se gravado na placa, executa o ciclo e as prioridades pelos botões com tempos fixos, mas não recebe os comandos do painel. Para usar o controle USB e a configuração pela EEPROM descritos acima, grave `ControleTrafego/ControleTrafego.ino`.
+
 ## Uno compatível / CH340: a porta aparece, mas não conecta
 
 Uma placa compatível pode aparecer como **USB Serial**, **CH340** ou **Unknown**, sem o nome Arduino. O encapsulamento soldado do microcontrolador não muda o protocolo exigido pelo painel. Se a porta aparece, selecione-a e, na IDE Arduino, escolha **Arduino Uno** manualmente.
