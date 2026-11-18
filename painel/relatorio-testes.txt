@@ -1,0 +1,179 @@
+FLUXO — REVISÃO DA EMERGÊNCIA E REGISTRO DE VERIFICAÇÃO
+Alvo: Arduino Uno R3 / arduino:avr:uno / Arduino AVR Boards 1.8.8
+
+COMPORTAMENTO ORIGINAL PRESERVADO
+Sem fila: E_VERDE retorna diretamente ao intervalo normal da via oposta.
+Com fila: E_VERDE -> E_AMARELO da via atendida -> E_VERMELHO -> E_VERDE da próxima via.
+Repetir um pedido da mesma via não reinicia a emergência.
+Um novo acionamento durante CONFLITO não reinicia a contagem de conflito.
+A parada manual continua como uma extensão explícita, separada da emergência original.
+O anexo original disponibilizado no site não foi alterado (cópia conferida byte a byte).
+
+CORREÇÕES DA REVISÃO
+1. Removido o amarelo extra no fim da emergência sem fila.
+2. Troca para emergência em fila volta a usar E_AMARELO, como no original.
+3. Conflito ativo não reinicia sua contagem em um novo acionamento.
+4. Pedidos USB respeitam o bloqueio de botões mantidos pressionados.
+5. Linhas seriais com NUL ou outros caracteres de controle são rejeitadas.
+6. Simulação, explicações e código para download atualizados com o mesmo comportamento.
+
+PERFIS
+Referência: 8000 8000 3000 2000 5000 10000 5000 ms; ciclo normal: 26000 ms.
+Perfil gerado no navegador: 4000 4000 2000 1000 3000 5000 3000 ms.
+Ordem: verde A, verde B, amarelo, intervalo, preparação, prioridade, conflito.
+
+RESULTADO 1 — EQUIVALÊNCIA COM O ORIGINAL: APROVADO
+clang++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -I tests tests/original_equivalence_test.cpp -o /tmp/fluxo-original-test
+/tmp/fluxo-original-test
+36 cenários; 259200 amostras idênticas.
+O teste executa o arquivo original intacto e o firmware USB com as mesmas entradas.
+Compara estados, oito saídas, fila, via de emergência, via amarela, última via verde,
+bloqueio e instante da transição. Exercita cada fase normal, pedidos individuais,
+em fila e repetidos, conflitos reacionados e entradas pseudoaleatórias reproduzíveis.
+A equivalência considera os tempos originais e não aciona os novos controles USB.
+
+RESULTADO 2 — TESTES DO FIRMWARE: APROVADO
+clang++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -I tests tests/firmware_test.cpp -o /tmp/fluxo-firmware-test
+/tmp/fluxo-firmware-test
+Cobertura: ciclo, exclusão de verdes simultâneos, pedestres, emergência sem fila e
+com fila, parada/retomada manual, conflito, debounce, validação atômica dos tempos,
+EEPROM, restauração persistente, perfis diferentes, linhas parciais/excessivas,
+rejeição de NUL, bloqueio dos pedidos USB e rollover de millis de 32 bits.
+Sem erros detectados pelos sanitizadores de memória e comportamento indefinido.
+Relógio, pinos, Serial e EEPROM simulados em C++ nativo.
+
+RESULTADO 3 — PAINEL NO CHROME: APROVADO
+node tests/browser_test.mjs
+Ciclo, emergência com fila e retorno original sem amarelo extra; bloqueio de pedidos
+quando os botões físicos continuam pressionados (telemetria simulada), configuração,
+parada/retomada, ACK, desconexão, timeout, componentes interativos, apresentação,
+código original, congelamento e avanço de fases, layouts em 1440 e 390 px.
+Restauração e salvamento em demo/USB simulada, falha de SAVE sem confirmação falsa,
+geração de .ino e rejeição de valores fora dos limites.
+O teste grava capturas e o .ino personalizado na pasta temporária fluxo-test-artifacts.
+
+RESULTADO 4 — COMPILAÇÃO PARA O UNO: APROVADO
+arduino-cli compile --fqbn arduino:avr:uno --build-path /tmp/fluxo-uno-build ControleTrafego
+arduino-cli compile --fqbn arduino:avr:uno --build-path /tmp/fluxo-generated-build /tmp/fluxo-generated/ControleTrafego
+Referência e arquivo gerado: 6624 / 32256 bytes de flash (20%);
+451 / 2048 bytes de RAM estática (22%).
+
+MONTAGEM FÍSICA: PENDENTE
+Os resultados automatizados acima não incluem upload em placa física nem medição de pinos ou ensaio de LEDs/botões reais. A gravação e comunicação física verificadas posteriormente estão registradas abaixo.
+Os testes não cobrem todas as combinações possíveis nem comprovam as ligações elétricas.
+Novas alterações no código ou nos perfis precisam de nova compilação e verificação.
+
+IDENTIFICAÇÃO DOS ARQUIVOS — SHA-256
+Original intacto: ab80889bfaf50ac9e99b1d44b43258a8263e8718c244d1ee2884d1770dd8c737
+Firmware padrão: 78325b783cd81acaedf8e1c5929cf2de17afd6bfc659be6f1efe20c92175ef0f
+Firmware gerado: bb2e0222e5de71a69f77835adcfc292bf24eb05273cc907a7c3a019f5dfed7c8
+
+APLICATIVO PYTHON — VERIFICAÇÃO DA MIGRAÇÃO
+Implementação: app.py, Python 3.9+, somente biblioteca padrão, sem pip.
+Iniciadores para macOS e Windows; linha de comando também disponível para Linux.
+Execução validada no macOS; não houve ensaio em Windows/Linux nesta sessão.
+
+python3 -B -m unittest discover -s tests -p test_app.py -v — APROVADO (6 testes)
+Servidor local, página e arquivos, MIME, HEAD, health, pedidos parciais, host,
+travessia de diretórios, NUL, symlink fora da raiz, reabertura da mesma instância,
+porta ocupada, encerramento autenticado e leitura atualizada do firmware em disco.
+
+node tests/browser_test.mjs — APROVADO
+Os testes completos do Chrome executam contra o servidor Python. Verificam
+contexto seguro, Web Serial, controles, apresentação, restauração, geração do .ino,
+conexão USB simulada e botão para encerrar pela página.
+
+Firmware e emergência não foram alterados na migração. Testes de lógica e de
+equivalência com o original foram repetidos com sanitizadores e aprovados.
+O original foi conferido byte a byte antes da remoção das cópias redundantes.
+O código e os downloads são lidos diretamente dos dois .ino preservados;
+não há compilação do aplicativo, empacotamento macOS ou sincronização de fontes.
+Nenhuma porta USB real foi aberta. Montagem física permanece pendente.
+
+DIAGNÓSTICO E CORREÇÃO NA PLACA REAL — 14/11/2026
+Porta detectada: /dev/cu.usbserial-1130.
+USB VID:PID: 1A86:7523, conversor da família CH340.
+
+Antes da correção:
+- Acesso à porta e recepção de dados confirmados.
+- A 115200 baud, sem telemetria JSON válida.
+- A 9600 baud: "NORMAL: VIA A AMARELA", "SEGURANCA: AMBAS VERMELHAS",
+  "NORMAL: VIA B VERDE". Evidência de execução do programa original, sem protocolo web.
+- Não foi necessário instalar driver: a porta serial já funcionava.
+
+Correção autorizada pelo usuário:
+- Firmware USB recompilado para arduino:avr:uno: aprovado (6624 B flash / 451 B RAM).
+- Teste de equivalência original repetido: 36 cenários / 259200 amostras, aprovado.
+- Upload do build verificado para /dev/cu.usbserial-1130: concluído, código de saída 0.
+- Não houve modificação da lógica de emergência para corrigir esta conexão.
+
+Verificação serial física após o upload:
+- HELLO a 115200 baud respondeu com config e status JSON.
+- Valores: [8000,8000,3000,2000,5000,10000,5000].
+- 14 mensagens de estado válidas recebidas.
+- Última amostra: estado 0, A verde, B vermelha, sem fila e sem bloqueio.
+- A porta foi fechada após o teste para permitir conexão pelo navegador.
+- A montagem elétrica e o acionamento dos botões/LEDs físicos não foram
+  inspecionados nesta verificação de comunicação.
+
+Painel atualizado e testado no Chrome com porta simulada:
+- Reconhece o VID:PID CH340 no rótulo de conexão.
+- Mensagem persistente distingue firmware incompatível, porta sem acesso e
+  bloqueio de permissão do navegador.
+- Teste de handshake sem firmware compatível também aprovado.
+
+APRESENTAÇÃO E PORTA OCUPADA — REVISÃO DE 14/11/2026
+Firmware não alterado; mantém a mesma identificação SHA-256 acima.
+
+Testes Python: 13 aprovados.
+- Recuperação autenticada e encerramento apenas do processo serial-monitor
+  identificado dentro da instalação Arduino, na única porta USB candidata.
+- Chrome, editores, múltiplas placas e processos com identidade alterada não
+  são encerrados. Sem ferramentas/permissões, orienta o fechamento manual.
+- Encerramento usa SIGTERM; nenhuma tentativa de SIGKILL ou elevação de privilégio.
+
+Testes Chrome com USB simulada: aprovados.
+- Controles de cenário, congelamento, avanço e código disponíveis durante conexão.
+- A apresentação simula sem enviar comandos pela USB e mantém a conexão ativa.
+- Acompanhar Arduino seleciona a telemetria real; acionar cenário retorna à simulação.
+- Outra aba Fluxo libera sua própria SerialPort quando a identificação é única,
+  não há comando pendente e as abas compartilham a mesma origem.
+- Simulação de porta ocupada: solicitação ao Python, liberação do monitor e
+  nova tentativa de abrir; conflito com Chrome mantém instrução para a outra aba.
+
+Limites: liberação do monitor externo depende de identificação segura no macOS/
+Linux e lsof. Windows, várias placas ou outro processo exigem fechamento manual.
+Não fecha a IDE principal nem o Chrome. Abas carregadas antes da atualização
+precisam ser recarregadas. Nenhum programa real foi encerrado pelos testes de
+recuperação; o uso da porta pela aba do usuário não foi interrompido.
+
+CENÁRIOS AO VIVO NA APRESENTAÇÃO — 14/11/2026
+Firmware não alterado; os cenários usam comandos existentes na placa.
+
+Novos controles:
+- Acompanhar ciclo (AUTO somente quando pausado).
+- Emergência A/B (PRIORITY A ou PRIORITY B).
+- Fila A → B (segundo pedido enviado somente após ACK do primeiro).
+- Parada e retomada (STOP / AUTO).
+- Conflito guiado: solicita pressionar os dois botões físicos e acompanha a
+  detecção real, sem criar comandos novos ou simular conflito com STOP.
+- A ficha dos botões A/B também permite solicitar prioridade ao vivo.
+
+Teste Chrome com USB simulada: APROVADO.
+Verificados: cliques enviam os comandos esperados, sequência de fila, parada e
+retomada, acompanhamento pela telemetria, acesso pelas fichas dos componentes,
+falha do segundo comando sem confirmação falsa, guia de conflito sem escrever
+na USB, bloqueio sem conexão e controles sem sobreposição em tela de 900 px.
+O histórico de etapas só avança após receber uma nova leitura da placa.
+Ações simultâneas ficam bloqueadas enquanto o cenário aguarda confirmação.
+Os exemplos simulados continuam separados das ações reais.
+
+Os testes desta interface não acionaram a placa física. A comunicação real do
+firmware existente já foi verificada conforme o registro anterior.
+
+SIMPLIFICAÇÃO DA APRESENTAÇÃO — 14/11/2026
+Removido o grupo de sete botões de cenários identificado no screenshot do usuário.
+Mantidos Acompanhar Arduino, diagrama com telemetria real, saídas e apresentação.
+Teste Chrome com USB simulada aprovado: o grupo não existe no DOM e a visualização
+real permanece selecionável durante a conexão, sem erros de JavaScript.
+Nenhuma alteração no firmware ou novo upload.
