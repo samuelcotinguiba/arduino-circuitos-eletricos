@@ -1,174 +1,323 @@
-# Fluxo · Arduino Uno + Python
+# Fluxo · Controle de tráfego com Arduino Uno
 
-Aplicação local em Python para abrir o painel, demonstrar o circuito e controlar o Uno por USB. **Sem pip, Swift, compilação do aplicativo ou Node para usar.**
+O projeto controla duas vias de um semáforo: a via A usa um módulo com LEDs separados e a via B usa um LED RGB de ânodo comum. Dois botões solicitam prioridade para as vias. O programa alterna os sinais, trata pedidos durante uma emergência, detecta conflito entre os botões e aciona os LEDs de pedestres.
 
-## Abrir
+A lógica física está em [`ControleTrafego/ControleTrafego.ino`](ControleTrafego/ControleTrafego.ino), gravado no Uno. O painel permite acompanhar e comandar essa lógica por USB. **Depois de programado e alimentado, o Uno funciona sozinho**, sem Python, navegador ou IDE abertos.
 
-**`app.py` é o ponto de entrada único:** inicia o servidor, escolhe a porta e abre o navegador automaticamente. Dê dois cliques nele se os arquivos `.py` estiverem associados à execução pelo Python. Se o sistema abrir um editor, use os atalhos abaixo ou configure essa associação; o arquivo não altera as preferências do sistema.
+Este README explica primeiro o firmware, depois a comunicação e o uso do painel. Os exemplos de tempo usam os valores padrão.
 
-Requer **Python 3.9 ou superior** e **Chrome ou Edge** para conectar por USB.
+## 1. Partes do projeto e suas responsabilidades
 
-- **macOS:** dê dois cliques em `iniciar-painel.command`.
-- **Windows:** dê dois cliques em `iniciar-painel.bat`.
-- **Linux ou terminal:** execute `python3 app.py` (`python app.py` no Windows).
+| Arquivo | Responsabilidade |
+| --- | --- |
+| [`ControleTrafego/ControleTrafego.ino`](ControleTrafego/ControleTrafego.ino) | Executa no Uno: lê botões, decide estados, conta tempos, aciona saídas, recebe comandos e salva configurações. |
+| [`painel/original.ino`](painel/original.ino) | Código original preservado: ciclo e emergência com tempos fixos, sem controle pelo painel. |
+| [`app.py`](app.py) | Executa no computador: serve a interface e os arquivos em um endereço local e abre o navegador. |
+| [`painel/app.js`](painel/app.js) | Controla a interface, a comunicação Web Serial, as confirmações e a demonstração sem placa. |
+| [`painel/apresentacao.js`](painel/apresentacao.js) | Controla o circuito interativo e a apresentação dos exemplos e do código. |
+| [`painel/padroes.js`](painel/padroes.js) | Mostra o perfil de referência, restaura/salva os padrões e gera sketches com os tempos escolhidos. |
+| [`tests/`](tests/) | Testes do servidor, do navegador, do firmware e da equivalência com o original. |
 
-O iniciador prepara o servidor e abre o navegador. Prefere a porta 8080; se ela pertence a outra aplicação, escolhe uma porta livre. Se este projeto já estiver aberto na porta 8080, reutiliza o serviço existente. O endereço aparece na janela do iniciador.
+O Uno é a própria placa Arduino. A distinção de funcionamento é entre **placa sozinha**, **placa com painel conectado** e **simulação sem placa**.
 
-Para encerrar, use **Encerrar aplicativo** no topo da página ou `Ctrl+C` na janela do iniciador. Isso não envia comandos de parada ao Arduino. Fechar apenas a aba não encerra o servidor. O serviço fica acessível somente no próprio computador, em `127.0.0.1`.
+## 2. Entradas, saídas e representação das cores
 
-A versão Python foi validada no macOS. Os iniciadores e a seleção do navegador também contemplam Windows e Linux, sem dependências específicas de macOS. Python deve estar instalado antes de abrir; o aplicativo não instala ferramentas automaticamente.
+| Componente | Pinos | Como o código usa |
+| --- | --- | --- |
+| Semáforo A: verde / amarelo / vermelho | D2 / D4 / D7 | `digitalWrite()` liga o LED correspondente. |
+| RGB B: vermelho / verde / azul | D3 / D6 / D5 | `analogWrite()` controla os canais do RGB de ânodo comum. |
+| LEDs de pedestres A / B | D9 / D8 | Acendem quando a respectiva via está vermelha. |
+| Botões A / B | D11 / D12 | Entradas `INPUT_PULLUP`: solto = `HIGH`; pressionado, ligado ao GND = `LOW`. |
 
-## Conectar a placa
+Use resistores limitadores adequados aos LEDs. No RGB de ânodo comum, `0` acende o canal e `255` apaga. O amarelo da via B resulta de vermelho e verde ligados juntos; o azul permanece apagado.
 
-1. Abra `ControleTrafego/ControleTrafego.ino` na IDE Arduino.
-2. Selecione **Arduino Uno** e a porta USB. Compile e carregue.
-3. Feche o Monitor Serial e o Plotter Serial para liberar a porta.
-4. Abra o Fluxo e clique em **Conectar Arduino**. Selecione a porta e espere a sincronização.
+No restante do firmware, as cores são números: **0 = vermelho, 1 = amarelo, 2 = verde**. A função `saidas(a, b)` traduz esses números para os pinos. Por exemplo:
 
-Se a placa já estiver com esse firmware, não precisa carregá-lo novamente para usar o iniciador Python. O navegador exige a seleção da porta por ação do usuário. A abertura da USB costuma reiniciar o Uno. A simulação e a apresentação funcionam sem placa; o controle físico requer USB e Chrome/Edge no computador.
-
-## Como a lógica funciona: Uno sozinho e com o painel
-
-**O Uno é a própria placa Arduino.** Aqui, a diferença é entre usar a placa sozinha, com alimentação e circuito montado, e usar essa mesma placa conectada ao painel no computador. Nos dois casos, quem decide as fases e aciona os LEDs físicos é o programa `.ino` gravado no Uno.
-
-### Uno sozinho, sem o painel
-
-Depois de carregar `ControleTrafego/ControleTrafego.ino`, a placa executa o controle sempre que recebe alimentação. Não precisa manter a IDE Arduino, o Python ou o navegador abertos. Sem o computador, use uma alimentação adequada para o Uno e mantenha o circuito conectado.
-
-Ao ligar ou reiniciar, o firmware configura os pinos, carrega os tempos válidos da EEPROM (ou os padrões do programa) e começa com ambas as vias vermelhas. Com os tempos padrão, espera 2 segundos e libera a via A. Depois repete este ciclo:
-
-| Fase | Via A | Via B | Duração padrão |
-| --- | --- | --- | --- |
-| 1 | Verde | Vermelho | 8 s |
-| 2 | Amarelo | Vermelho | 3 s |
-| 3 | Vermelho | Vermelho | 2 s |
-| 4 | Vermelho | Verde | 8 s |
-| 5 | Vermelho | Amarelo | 3 s |
-| 6 | Vermelho | Vermelho | 2 s |
-
-O ciclo completo dura 26 segundos e retorna à fase 1. Os LEDs de pedestres acendem quando a respectiva via está vermelha, inclusive nos intervalos em que ambas estão vermelhas.
-
-A lógica usa uma **máquina de estados**: cada fase guarda as cores, a duração e o instante de entrada. A função `loop()` verifica os botões, recebe eventuais comandos seriais e compara o tempo de `millis()` com a duração da fase. Ao terminar o tempo, passa à próxima fase. Não usa `delay()` para esperar a fase terminar; assim, continua lendo os botões durante a contagem.
-
-Os botões físicos D11 (A) e D12 (B) solicitam prioridade. A leitura precisa ficar estável por 20 ms para filtrar oscilações do contato. Quando um pedido é aceito:
-
-1. Se há uma via verde ou amarela, ela passa por uma fase amarela de 3 s. Se ambas já estão vermelhas, essa etapa é pulada.
-2. Ambas ficam vermelhas por 5 s de preparação.
-3. A via solicitada recebe verde por 10 s, mantendo a outra vermelha.
-4. Sem outro pedido na fila, ambas voltam ao vermelho pelo intervalo normal de 2 s e o ciclo libera a via oposta à última atendida.
-
-Se a outra via pedir prioridade durante a emergência, o pedido fica na fila. Ao terminar o atendimento atual, o firmware faz amarelo, preparação com ambas vermelhas e verde para a via da fila. Repetir o pedido da via já atendida não reinicia o tempo. Se os dois botões ficam pressionados juntos, a placa cancela a fila e mantém ambas vermelhas por 5 s de conflito; depois retoma pelo intervalo normal. É necessário soltar os dois botões para permitir novos pedidos.
-
-### Uno conectado ao painel por USB
-
-**A mesma máquina de estados continua rodando no Uno.** O painel acrescenta visualização e comandos: o navegador usa Web Serial para conversar diretamente com a placa a 115200 baud. O `app.py` serve a interface e os arquivos; a contagem das fases físicas fica no firmware.
-
-A placa envia seu estado a cada 250 ms, incluindo cores, fase, tempo restante e fila. O painel mostra essas leituras e permite solicitar prioridade A/B, alterar os sete tempos, salvar na EEPROM, restaurar os padrões e pedir parada ou retomada. Os comandos são validados pelo firmware; os botões físicos continuam funcionando, respeitando os bloqueios de conflito e parada.
-
-Ao pedir **parada**, a via acesa passa pelo amarelo e ambas ficam vermelhas até o comando de retomada. A parada cancela a fila e bloqueia prioridades. Ao **retomar**, a placa cumpre o intervalo normal e libera a via oposta à última que esteve verde.
-
-Alterar os tempos aplica os novos valores às próximas entradas de fase, sem encurtar a fase em andamento. **Aplicar na RAM** mantém os valores enquanto a placa não reiniciar; **salvar na EEPROM** permite recuperá-los após desligar e ligar, desde que sejam válidos e compatíveis com o perfil do firmware.
-
-Fechar o painel ou perder a comunicação não envia uma parada automática: enquanto continuar alimentado, o Uno segue no estado em que estava, executando as transições previstas. Se estava pausado, permanece com ambas vermelhas. Se retirar o cabo também cortar a alimentação, a placa desliga. Ao religar, começa pela sequência de inicialização; fase, fila e parada não são salvas na EEPROM. Abrir a conexão serial também costuma reiniciar o Uno.
-
-### Painel sem placa e código original
-
-Sem conexão USB, o modo de demonstração simula a lógica no JavaScript do navegador. Os comandos alteram a simulação e não acionam LEDs físicos nem gravam a EEPROM de uma placa. A apresentação também pode mostrar exemplos simulados enquanto há uma placa conectada; selecione **Acompanhar Arduino** para visualizar os estados reais no diagrama.
-
-O arquivo `painel/original.ino` é a versão original preservada para consulta e comparação. Se gravado na placa, executa o ciclo e as prioridades pelos botões com tempos fixos, mas não recebe os comandos do painel. Para usar o controle USB e a configuração pela EEPROM descritos acima, grave `ControleTrafego/ControleTrafego.ino`.
-
-## Uno compatível / CH340: a porta aparece, mas não conecta
-
-Uma placa compatível pode aparecer como **USB Serial**, **CH340** ou **Unknown**, sem o nome Arduino. O encapsulamento soldado do microcontrolador não muda o protocolo exigido pelo painel. Se a porta aparece, selecione-a e, na IDE Arduino, escolha **Arduino Uno** manualmente.
-
-No computador desta sessão foi encontrada `/dev/cu.usbserial-1130`, USB `1A86:7523` (CH340). Antes da correção, o teste de comunicação recebeu a 9600 baud mensagens como `NORMAL: VIA A AMARELA` e `NORMAL: VIA B VERDE`, indicando o código original em execução. Com autorização do usuário, a versão USB foi gravada nessa placa e a comunicação a 115200 baud foi confirmada com configuração padrão e 14 mensagens de estado válidas. O painel usa a versão USB a 115200 baud, com JSON e recepção de comandos. Mudar apenas a velocidade do navegador não adiciona esses comandos ao código original.
-
-Carregue **`ControleTrafego/ControleTrafego.ino` da raiz do projeto**, ou baixe a **Versão com painel USB** no site. O arquivo `painel/original.ino` existe para consulta/apresentação e não implementa o controle web. A emergência original é preservada na versão USB e verificada pelo teste de equivalência. Feche o Monitor/Plotter Serial e outras abas conectadas antes de usar o painel.
-
-Referência: [Arduino: dispositivos Unknown e conversores CH340](https://support.arduino.cc/hc/en-us/articles/16884223752220-If-there-are-Unknown-devices-in-the-board-selector-or-ports-without-a-board-name-in-the-Tools-Port-menu).
-
-## Porta ocupada e Monitor Serial
-
-Ao conectar, uma aba nova do Fluxo pede à aba anterior, na mesma origem (mesmo endereço e porta), que libere sua própria conexão USB. Isso só acontece quando há uma única placa autorizada com aquela identificação USB e nenhuma operação pendente. Abas antigas, que ainda não carregaram esta atualização, precisam ser recarregadas ou desconectadas manualmente. Placas iguais múltiplas e abas em endereços diferentes não são transferidas automaticamente.
-
-Se abrir a USB falhar, o navegador pede ajuda ao Python. No macOS/Linux, com `lsof` disponível e uma única porta USB candidata, o aplicativo pode encerrar somente o processo separado `serial-monitor` da instalação Arduino que estiver ocupando essa porta. A identificação é conferida novamente antes do encerramento. A tentativa de conexão é repetida uma vez.
-
-**O Chrome e o editor Arduino nunca são encerrados pelo aplicativo.** Se outra aba do Chrome ocupa a porta, desconecte nela ou feche essa aba. Se não houver identificação segura do monitor, se houver várias placas, se a IDE reabrir o monitor ou se a plataforma não oferecer essa identificação (incluindo Windows), o painel explica como fechar a aba Monitor Serial/Plotter manualmente. O Chrome não tem permissão para fechar diretamente programas do computador; essa assistência depende do `app.py` atualizado e ativo.
-
-A recuperação é solicitada somente após falha ao abrir a porta escolhida e protegida pelo token da sessão local. Ela não grava firmware nem envia comandos de prioridade ou parada. Depois de atualizar `app.py`, reinicie o servidor para carregar esse recurso.
-
-Referências: [Arduino: localizar processos que bloqueiam a porta](https://support.arduino.cc/hc/en-us/articles/4407830972050-Find-and-stop-process-blocking-a-port), [Web Serial no Chrome](https://developer.chrome.com/docs/capabilities/serial/).
-
-## O que fica em cada pasta
-
-```text
-app.py                          servidor e abertura do navegador
-iniciar-painel.command             atalho para macOS
-iniciar-painel.bat                 atalho para Windows
-ControleTrafego/ControleTrafego.ino firmware para a placa
-painel/                           interface, original preservado e relatório
-tests/                           testes Python, navegador e lógica do firmware
+```cpp
+saidas(2, 0); // A verde; B vermelha
+saidas(0, 1); // A vermelha; B amarela
+saidas(0, 0); // ambas vermelhas
 ```
 
-Fotos de referência e capturas locais não são necessárias para executar o projeto e ficam fora do versionamento. O `.gitignore` também exclui caches, ambientes virtuais, configurações locais e arquivos gerados de compilação e testes.
+Antes de aplicar as cores, `saidas()` desliga o verde e o amarelo de A e os canais de B. Depois liga as saídas desejadas, atualiza os pedestres e registra `corA` e `corB`. A escolha de combinações permitidas pertence à máquina de estados: seus caminhos não liberam as duas vias ao mesmo tempo.
 
-**Não é necessário gerar ou sincronizar arquivos.** O Python lê o `.ino` atual diretamente para alimentar a consulta de código e o download. `source-data.js` e `firmware.ino` são endereços servidos pela aplicação, não cópias em disco. O original enviado está preservado em `painel/original.ino`.
+Os pedestres acompanham o vermelho de sua via, inclusive quando ambas estão vermelhas. Não existe uma fase exclusiva de travessia nem botão de pedestre. O circuito é uma demonstração em bancada, e a ilustração do painel é funcional, não um esquema elétrico.
 
-Depois de editar HTML/CSS/JS ou o `.ino`, recarregue a página. Mudanças no Python pedem reiniciar o iniciador. Mudanças no programa executado pela placa exigem novo upload pela IDE; editar os tempos pelo painel não exige recompilar. Abra a interface pelo iniciador, e não diretamente pelo arquivo HTML.
+## 3. Como o programa começa e se repete
 
-## Controles, padrões e apresentação
+`setup()` executa uma vez após ligar ou reiniciar a placa:
 
-O painel mostra LEDs, pedestres, estado, tempo restante, prioridades e fila. Permite configurar sete tempos, aplicar na RAM, salvar na EEPROM e restaurar o padrão original. Os novos tempos valem na próxima entrada da fase, preservando a duração da fase em andamento.
+1. Abre a serial a 115200 baud.
+2. Configura os pinos dos LEDs como saídas e os botões como `INPUT_PULLUP`.
+3. Chama `carregar()` para escolher os tempos: configuração válida da EEPROM ou `PADRAO`.
+4. Entra em `N_RED_TO_A`, deixando ambas as vias vermelhas pelo intervalo normal.
+5. Envia o evento de inicialização e a configuração pela serial.
 
-| Ajuste | Padrão | Limites |
-| --- | --- | --- |
-| Verde A | 8 s | 1–60 s |
-| Verde B | 8 s | 1–60 s |
-| Amarelo | 3 s | 1–10 s |
-| Intervalo normal | 2 s | 1–10 s |
-| Preparação da emergência | 5 s | 1–30 s |
-| Verde de emergência | 10 s | 1–60 s |
-| Conflito | 5 s | 1–30 s |
+`ultimaViaVerde` começa em `2` (B). Isso permite que a primeira via liberada seja A. Com o padrão, a primeira abertura acontece após os 2 segundos iniciais de vermelho.
 
-O ciclo padrão tem 26 s. **Restaurar e salvar padrão** aplica os sete valores originais e grava na EEPROM. **Baixar .ino padrão** e **.ino com tempos do formulário** preparam arquivos para carregar pela IDE; não gravam a placa automaticamente.
+Em seguida, o Arduino repete este `loop()`:
 
-A EEPROM guarda a configuração e a lista-base do perfil compilado. Ao carregar outro perfil, ajustes salvos para uma base diferente são ignorados. Recarregar o mesmo perfil mantém seus ajustes salvos. A primeira carga do formato de EEPROM 2 ignora dados da versão 1. O botão de restauração sempre aplica o padrão original do projeto; o comando serial `DEFAULTS` restaura a base compilada no firmware carregado.
+```cpp
+void loop() {
+  botoes(); serialReceber(); avancar();
+  if(millis()-ultimaTelemetria>=250) { ultimaTelemetria=millis(); status(); }
+}
+```
 
-Em **Circuito interativo**, clique nos componentes para ver funções e pinos. O modo apresentação tem seis etapas, cenários, congelamento e avanço por fase. Os controles da apresentação permanecem disponíveis com a placa conectada: a simulação didática pode ser congelada, avançada ou reproduzida sem enviar comandos à placa. Use **Acompanhar Arduino** para mostrar as leituras reais e **Simular apresentação** para voltar à simulação. Ao clicar em **Simular este exemplo**, o diagrama volta à simulação e mantém a conexão USB intacta. Em **Código explicado**, consulte o original ou o firmware USB, por blocos ou por inteiro, com cópia e download.
+A ordem importa: primeiro lê as entradas físicas, depois processa comandos USB, depois verifica o fim da fase. A cada 250 ms, também transmite o estado. A comunicação é consultada mesmo sem painel conectado; não existe espera por conexão para iniciar o ciclo.
 
-O histórico mantém os últimos 150 eventos da sessão, exibe 40 e exporta CSV. Recarregar a página limpa o histórico. A fonte Google Fonts é opcional; sem internet são usadas fontes locais. Nenhuma função de controle depende de internet.
+### Contagem sem `delay()`
 
-## Acompanhar a placa na apresentação
+O programa usa `millis()`, o contador de milissegundos desde a inicialização. Cada entrada de estado registra `instanteEstado` e define `duracao`. Em `avancar()`, esta condição impede uma troca antes do tempo:
 
-Use **Acompanhar Arduino** para mostrar o diagrama com os estados reais recebidos pela USB. O grupo adicional de sete botões de cenários foi removido para simplificar a apresentação. A visualização ao vivo, os exemplos simulados e os controles principais de Visão geral continuam disponíveis.
+```cpp
+if(estado==PAUSADO || millis()-instanteEstado<duracao) return;
+```
 
-Ao selecionar o botão A ou B da ilustração, a ficha mantém a solicitação de prioridade correspondente. Essa ação aguarda a confirmação do firmware. Nenhuma mudança no `.ino` ou novo upload foi necessário.
+Exemplo: se uma fase começou em 10000 ms e dura 8000 ms, em 15000 ms decorreram apenas 5000 ms; o programa mantém a fase. A partir de 18000 ms, pode executar a próxima transição.
 
-## Emergência original preservada
+A espera não fica em um `delay()`: o `loop()` continua passando pelos botões e pela serial. A subtração com os contadores sem sinal também permite contar o intervalo quando `millis()` retorna a zero após atingir seu limite de 32 bits.
 
-- Sem fila: `E_VERDE` retorna diretamente ao intervalo normal, com ambas vermelhas, para depois liberar a via oposta à última atendida.
-- Com fila: a via atendida passa por `E_AMARELO`, depois `E_VERMELHO`, antes de `E_VERDE` da próxima via.
-- Pedidos repetidos da mesma via não reiniciam a emergência.
-- Dois botões pressionados levam ao conflito. Enquanto já está ativo, outro acionamento não reinicia sua contagem. Os botões precisam ser soltos para rearmar a detecção.
+## 4. Máquina de estados: quem decide cores e próxima fase
 
-A parada manual do painel é uma extensão explícita: fecha a via pelo amarelo e mantém ambas vermelhas até retomar. Ela cancela a fila e bloqueia prioridades enquanto ativa. Fora desse comando e dos ajustes de tempo autorizados, os testes verificam as transições originais.
+`enum Estado` dá nome às fases. Duas funções dividem o trabalho:
 
-Os LEDs de pedestres reproduzem o original: acendem quando sua via fica vermelha, inclusive com ambas vermelhas. O diagrama é funcional, não um esquema elétrico. O projeto é uma demonstração em bancada.
+- **`mudarEstado(novo)`** entra na fase: atualiza `estado`, registra o instante, escolhe as saídas e copia o tempo correspondente para `duracao`.
+- **`avancar()`** verifica o tempo e escolhe a próxima fase com um `switch`. Botões e comandos também podem provocar uma mudança antes do fim da fase normal.
 
-## Pinagem mantida
+### Ciclo normal
 
-| Componente | Pino |
+| Estado | Via A | Via B | Duração padrão | Próximo estado ao terminar |
+| --- | --- | --- | --- | --- |
+| `N_A_VERDE` | Verde | Vermelho | 8 s | `N_A_AMARELO` |
+| `N_A_AMARELO` | Amarelo | Vermelho | 3 s | `N_RED_TO_B` |
+| `N_RED_TO_B` | Vermelho | Vermelho | 2 s | `N_B_VERDE` |
+| `N_B_VERDE` | Vermelho | Verde | 8 s | `N_B_AMARELO` |
+| `N_B_AMARELO` | Vermelho | Amarelo | 3 s | `N_RED_TO_A` |
+| `N_RED_TO_A` | Vermelho | Vermelho | 2 s | `N_A_VERDE` |
+
+```mermaid
+stateDiagram-v2
+    [*] --> N_RED_TO_A
+    N_RED_TO_A --> N_A_VERDE: 2 s
+    N_A_VERDE --> N_A_AMARELO: 8 s
+    N_A_AMARELO --> N_RED_TO_B: 3 s
+    N_RED_TO_B --> N_B_VERDE: 2 s
+    N_B_VERDE --> N_B_AMARELO: 8 s
+    N_B_AMARELO --> N_RED_TO_A: 3 s
+```
+
+O ciclo completo soma **26 segundos**. Os estados `N_RED_TO_A` e `N_RED_TO_B` têm as mesmas saídas, mas guardam destinos diferentes. Assim, o programa sabe qual via abrir depois do intervalo com ambas vermelhas.
+
+### Variáveis que guardam as decisões
+
+| Variável | Significado na lógica |
 | --- | --- |
-| Via A · verde / amarelo / vermelho | D2 / D4 / D7 |
-| RGB de ânodo comum · vermelho / verde / azul | D3 / D6 / D5 |
-| Pedestres A / B | D9 / D8 |
-| Botões A / B | D11 / D12 |
+| `estado` | Fase atual; determina qual regra de transição será aplicada. |
+| `instanteEstado` / `duracao` | Quando a fase começou e quanto deve durar. |
+| `tempos[7]` | Configuração usada ao entrar nas próximas fases. |
+| `corA` / `corB` | Cores aplicadas nas saídas; permitem identificar a via que precisa passar pelo amarelo. |
+| `viaEmergencia` | Via escolhida para o atendimento prioritário: 1 = A; 2 = B. Não indica sozinha que uma emergência está ativa; isso depende de `estado`. |
+| `viaAmarela` | Via que deve ficar amarela durante uma transição de emergência ou parada. |
+| `fila` | Um único pedido pendente: 0 = nenhum; 1 = A; 2 = B. |
+| `ultimaViaVerde` | Última via liberada, usada para escolher a via oposta na retomada. |
+| `conflitoBloqueado` | Impede novos pedidos até que os dois botões tenham sido soltos após um conflito. |
+| `pausaSolicitada` | Marca uma parada em andamento ou já concluída e bloqueia prioridades. |
 
-Os botões são ligados ao GND com `INPUT_PULLUP`; LOW significa pressionado. Use os resistores limitadores adequados. No RGB, 0 acende e 255 apaga; amarelo combina vermelho e verde. O azul permanece apagado.
+## 5. Botões: leitura, debounce e detecção de uma pressão
 
-## Testar
+O contato de um botão pode oscilar rapidamente ao apertar ou soltar. `botoes()` filtra essa oscilação com **20 ms de estabilidade**, usando três informações por botão:
 
-Os testes não são dependências para usar o aplicativo. Resultados e limites estão em `painel/relatorio-testes.txt`, também disponível para download no site.
+1. `anterior[i]` guarda a última leitura bruta. Se a leitura muda, o código atualiza `mudanca[i]` com o instante da mudança.
+2. Se a leitura permanece por pelo menos 20 ms e difere de `estavel[i]`, ela passa a ser o novo estado estável.
+3. `pressionou[i]` fica verdadeiro somente na passagem estável para `LOW`. No início de cada chamada, volta a falso.
+
+Isso separa **estar segurando** de **acabar de apertar**. Segurar um botão não gera pedidos repetidos em cada volta do `loop()`. Um pulso que termina antes da janela de estabilidade não vira uma pressão válida.
+
+Depois da filtragem, `botoes()` verifica o conflito antes de encaminhar pedidos individuais a `solicitar(1)` ou `solicitar(2)`.
+
+## 6. Prioridade: entrada, atendimento e fila
+
+No código, os nomes `E_AMARELO`, `E_VERMELHO` e `E_VERDE` representam as fases de emergência/prioridade. A função `emergencia()` retorna verdadeiro somente nesses três estados.
+
+### Pedido durante o ciclo normal
+
+`solicitar(via)` primeiro recusa pedidos se houver conflito, bloqueio após conflito ou parada. Quando pode atender, guarda a via em `viaEmergencia` e verifica as cores atuais:
+
+- Se alguma via está verde ou amarela, guarda essa via em `viaAmarela` e entra em `E_AMARELO` por 3 s. Mesmo que ela já estivesse amarela, a entrada nesse estado começa uma nova contagem completa.
+- Se ambas já estão vermelhas, vai diretamente para `E_VERMELHO` e começa a preparação de 5 s.
+
+Depois, `avancar()` conduz `E_AMARELO → E_VERMELHO → E_VERDE`. Em `E_VERDE`, somente a via solicitada recebe verde, por 10 s, e passa a ser `ultimaViaVerde`.
+
+Exemplo: **B pede prioridade enquanto A está verde**, sem outros pedidos:
+
+| Momento após o pedido aceito | Estado | Saídas |
+| --- | --- | --- |
+| 0 a 3 s | `E_AMARELO` | A amarela; B vermelha |
+| 3 a 8 s | `E_VERMELHO` | Ambas vermelhas |
+| 8 a 18 s | `E_VERDE` | A vermelha; B verde |
+| 18 a 20 s | `N_RED_TO_A` | Ambas vermelhas |
+| A partir de 20 s | `N_A_VERDE` | A verde; B vermelha |
+
+O mesmo procedimento é aplicado se A pedir prioridade enquanto A já está verde: o programa faz a transição de emergência em vez de simplesmente prolongar o verde normal.
+
+### Pedido enquanto uma emergência está em andamento
+
+Se `emergencia()` já é verdadeira, `solicitar()` não reinicia a sequência:
+
+- Pedido da mesma `viaEmergencia`: retorna sem reiniciar o tempo.
+- Pedido da outra via: grava essa via em `fila`.
+
+A fila é uma variável de uma posição, não uma lista de eventos. Pedir várias vezes a mesma via pendente mantém um único atendimento agendado. Essa regra vale desde `E_AMARELO`, incluindo a preparação em vermelho e o verde prioritário.
+
+Ao terminar `E_VERDE`, `avancar()` decide:
+
+- **Com fila:** guarda a via atendida em `viaAmarela`, transfere `fila` para `viaEmergencia`, zera a fila e entra em `E_AMARELO`. Seguem 3 s de amarelo da via anterior, 5 s de ambas vermelhas e 10 s de verde da próxima via.
+- **Sem fila:** chama `retomar()`. A saída do verde prioritário vai diretamente para o intervalo normal com ambas vermelhas, sem amarelo adicional, preservando o comportamento original.
+
+`retomar()` consulta `ultimaViaVerde`: se A foi a última, escolhe `N_RED_TO_B`; caso contrário, `N_RED_TO_A`. Assim, a volta ao ciclo normal atende a via oposta à última liberada.
+
+## 7. Conflito: os dois botões pressionados
+
+O conflito ocorre quando as duas leituras **estáveis** estão em `LOW` ao mesmo tempo. Não é necessário apertar exatamente no mesmo instante: segurar um botão e depois apertar o outro também pode gerar conflito.
+
+`botoes()` zera `fila`, ativa `conflitoBloqueado` e entra imediatamente em `CONFLITO`, com ambas vermelhas por 5 s. Essa entrada não passa pelo amarelo. Durante o conflito, pedidos de prioridade não são atendidos.
+
+Ao terminar o tempo, `avancar()` chama `retomar()`: cumpre o intervalo normal de 2 s e libera a via oposta à última verde. **O ciclo pode retomar mesmo se os botões continuarem pressionados**, mas novos pedidos seguem bloqueados. O bloqueio só é removido quando ambos são lidos como soltos após o debounce. Isso evita que botões segurados reiniciem o conflito continuamente.
+
+O conflito dos botões físicos e a fila são mecanismos diferentes: dois comandos USB de prioridade recebidos em sequência seguem a regra de atendimento/fila; não simulam os dois contatos físicos pressionados juntos.
+
+## 8. Parada e retomada pelo painel
+
+`STOP` chama `pausar()`: ativa `pausaSolicitada` e cancela a fila. Se alguma via está verde ou amarela, entra em `PARADA_AMARELO` por 3 s e depois em `PAUSADO`. Se ambas já estão vermelhas, entra diretamente em `PAUSADO`.
+
+Em `PAUSADO`, ambas ficam vermelhas por tempo indefinido. Embora `duracao` seja zero, `avancar()` retorna sem mudar de estado. Prioridades pelos botões ou pela USB ficam bloqueadas; uma nova solicitação de parada não reinicia a transição.
+
+`AUTO` só é aceito depois que a placa chega a `PAUSADO`. Ele limpa a solicitação de parada, a indicação de prioridade e a fila, e chama `retomar()`. A próxima abertura respeita o intervalo normal e a alternância pela última via verde. Essa parada é uma extensão do firmware USB; o código original não possui `STOP`/`AUTO`.
+
+## 9. Tempos, RAM e EEPROM
+
+A configuração tem sete posições. `PADRAO`, `MINIMO` e `MAXIMO` definem a referência compilada e os limites, em **milissegundos**:
+
+| Índice em `tempos` | Uso | Padrão | Limites |
+| --- | --- | --- | --- |
+| 0 | Verde normal A | 8000 ms | 1000–60000 ms |
+| 1 | Verde normal B | 8000 ms | 1000–60000 ms |
+| 2 | Amarelo normal, de emergência e de parada | 3000 ms | 1000–10000 ms |
+| 3 | Intervalo normal com ambas vermelhas | 2000 ms | 1000–10000 ms |
+| 4 | Preparação da emergência com ambas vermelhas | 5000 ms | 1000–30000 ms |
+| 5 | Verde prioritário | 10000 ms | 1000–60000 ms |
+| 6 | Conflito | 5000 ms | 1000–30000 ms |
+
+`SET` valida os sete números em um vetor temporário e só depois copia tudo para `tempos`. Se um valor ou o formato for inválido, a configuração anterior é mantida por inteiro.
+
+`mudarEstado()` copia o tempo da fase para `duracao` na entrada. Por isso, mudar o verde A de 8 s para 12 s enquanto A já está verde mantém os 8 s daquela fase; os 12 s valem na próxima entrada em `N_A_VERDE`.
+
+**RAM** é a configuração em uso, perdida no reinício. **EEPROM** mantém os dados sem alimentação. `salvar()` grava uma estrutura `Memoria` com marca de identificação, versão, perfil-base, sete tempos e checksum. O checksum é um valor calculado a partir dos tempos para conferir sua integridade.
+
+Na inicialização, `carregar()` primeiro copia `PADRAO`. Só substitui pelos valores salvos se a marca for `0x5446`, a versão for `2`, o perfil-base for igual ao `PADRAO` compilado, o checksum conferir e todos os tempos estiverem nos limites. Caso qualquer verificação falhe, continua com o padrão.
+
+Assim, gravar um sketch com outro perfil `PADRAO` não faz o Uno herdar ajustes de um perfil antigo. Regravar o mesmo perfil permite reutilizar a configuração válida salva. A EEPROM guarda **tempos e perfil**, não a fase, a fila ou a condição de parada.
+
+`DEFAULTS` copia o `PADRAO` compilado para a RAM; `SAVE` persiste os valores atuais. No painel, **Restaurar e salvar padrão** aplica os sete valores originais do projeto e os salva. Se o sketch tiver um perfil personalizado, esses valores originais podem diferir do `PADRAO` que o comando serial `DEFAULTS` restaura.
+
+## 10. Comunicação entre o Uno e o painel
+
+O caminho dos comandos é **navegador → Web Serial → USB → firmware**. O Python fornece a página e os arquivos; o firmware continua responsável pela contagem e pelas decisões sobre as saídas.
+
+### Recepção e validação no Arduino
+
+`serialReceber()` lê no máximo 32 caracteres por volta do `loop()`, acumulando uma linha em `entrada[96]`. Ignora `\r` e só chama `comando()` ao receber `\n`. Isso permite receber um comando em várias partes sem executá-lo incompleto.
+
+Se a linha ultrapassar o espaço disponível ou contiver caracteres de controle inválidos, o firmware descarta a linha até o próximo `\n` e responde com falha. O limite de leitura distribui o processamento entre as voltas do `loop()`.
+
+| Comando | Ação no firmware |
+| --- | --- |
+| `HELLO` | Envia a configuração e o estado para sincronizar o painel. |
+| `STATUS` | Envia uma leitura do estado atual. |
+| `PRIORITY A` / `PRIORITY B` | Chama `solicitar()` se a fase e os bloqueios permitirem. |
+| `STOP` | Solicita a parada controlada. |
+| `AUTO` | Retoma somente se já estiver em `PAUSADO`. |
+| `SET a b c d e f g` | Valida e aplica sete tempos em ms na ordem da tabela anterior. |
+| `SAVE` | Salva a configuração atual na EEPROM. |
+| `DEFAULTS` | Restaura na RAM o perfil-base compilado. |
+
+Por exemplo, a linha abaixo aplica os tempos padrão na RAM; a linha `SAVE` os persiste. Cada linha deve terminar com uma quebra de linha:
+
+```text
+SET 8000 8000 3000 2000 5000 10000 5000
+SAVE
+```
+
+### O que a placa devolve
+
+As respostas são linhas JSON: `config` leva os sete tempos; `event` descreve acontecimentos; `ack` confirma ou recusa comandos; `status` leva a telemetria. `HELLO` e `STATUS` retornam seus dados diretamente, sem `ack` separado.
+
+A cada 250 ms, `status()` envia `state`, cores `a`/`b`, `remaining`, `duration`, `queue`, `priority`, `blocked`, `stopping` e `uptime`. `state` corresponde à posição no `enum`: 0–5 são fases normais; 6–8, emergência; 9, conflito; 10, amarelo de parada; 11, pausado. O painel deve interpretar a prioridade junto com a fase, pois `viaEmergencia` pode manter o último valor após o atendimento.
+
+O painel aguarda confirmação dos comandos e bloqueia operações quando perde a sincronização. A confirmação de uma prioridade indica que o pedido foi aceito, não que a via já abriu: ela pode estar em preparação ou na fila.
+
+### O que acontece ao desconectar
+
+Fechar o navegador, encerrar o Python ou perder a serial não envia uma parada automática. Com alimentação mantida, o Uno segue executando a lógica. Se estava pausado, permanece pausado. Se retirar o cabo cortar a alimentação, a placa desliga.
+
+Ao religar, a placa carrega os tempos e começa novamente pelo intervalo `N_RED_TO_A`; não recupera fase, fila ou parada anteriores. Abrir a conexão serial também costuma reiniciar o Uno.
+
+## 11. Código original, firmware USB e simulação
+
+| Modo | Onde a lógica roda | Entradas e recursos |
+| --- | --- | --- |
+| `painel/original.ino` gravado | No Uno | Botões físicos; tempos fixos; mensagens de texto a 9600 baud. |
+| `ControleTrafego/ControleTrafego.ino` gravado, sem painel | No Uno | Botões físicos; tempos compilados ou recuperados da EEPROM. |
+| Mesmo firmware com painel USB | No Uno | Botões e comandos; visualização dos estados reais; configuração, persistência e parada. |
+| Demonstração sem placa | No JavaScript do navegador | Simulação para explorar a lógica, sem acionar pinos ou gravar EEPROM física. |
+
+No original, as funções `liberarA()`, `amareloA()`, `liberarB()`, `amareloB()` e `ambasVermelhas()` escrevem as saídas. No firmware USB, esse trabalho fica centralizado em `saidas(a, b)`. `iniciarEmergencia()` corresponde a `solicitar()`, `solicitacaoFila` corresponde a `fila`, e `retomarCicloNormal()` corresponde a `retomar()`. As etapas de leitura e tratamento dos botões foram reunidas em `botoes()`.
+
+O firmware USB mantém as transições de ciclo e emergência originais e acrescenta protocolo, tempos configuráveis, EEPROM e parada. O original preservado não recebe os comandos do painel; mudar só a velocidade serial não adiciona esse suporte.
+
+Na apresentação, é possível usar exemplos simulados mesmo com a placa conectada. **Acompanhar Arduino** mostra os estados reais no diagrama; **Simular apresentação** mostra o exemplo didático. Congelar ou avançar a simulação não congela nem avança a placa física.
+
+## 12. Como executar
+
+Para a placa sozinha, abra `ControleTrafego/ControleTrafego.ino` na IDE Arduino, selecione **Arduino Uno**, escolha a porta e carregue. Depois mantenha o Uno alimentado e o circuito montado. Alterações no arquivo `.ino` só passam a valer na placa após novo upload.
+
+Para usar o painel, instale **Python 3.9 ou superior**. Não há pacotes para instalar com pip. Execute:
+
+```sh
+python3 app.py
+```
+
+No Windows, use `python app.py` ou o atalho `iniciar-painel.bat`. No macOS, também há `iniciar-painel.command`. O iniciador abre o navegador, prefere a porta 8080 e escolhe outra livre se necessário. O serviço atende somente no computador local, em `127.0.0.1`.
+
+Para USB, use **Chrome ou Edge no computador**, feche o Monitor/Plotter Serial e clique em **Conectar Arduino**. A demonstração pode ser usada sem placa. Para iniciar sem abrir navegador ou escolher uma porta livre:
+
+```sh
+python3 app.py --no-browser --port 0
+```
+
+Use **Encerrar aplicativo** ou `Ctrl+C` para fechar o servidor. Apenas fechar a aba não encerra o Python. A fonte Google Fonts é opcional; o controle não depende de internet.
+
+O painel permite consultar e baixar o original e o firmware USB, exportar o histórico da sessão em CSV e baixar sketches com tempos personalizados. Os downloads não gravam a placa automaticamente. O Python lê o `.ino` diretamente; `source-data.js` e `firmware.ino` são rotas servidas, não cópias para sincronizar. Mudanças na interface pedem recarregar a página; mudanças no Python pedem reiniciar o servidor.
+
+### Porta USB não conecta
+
+Placas compatíveis podem aparecer como **USB Serial**, **CH340** ou **Unknown**. Selecione a porta e escolha **Arduino Uno** na IDE. Confira que o firmware USB deste projeto está gravado; o original não implementa o protocolo do painel.
+
+Feche outras abas conectadas e o Monitor/Plotter Serial. O painel tenta pedir à aba anterior, na mesma origem, que libere a conexão quando identifica uma única placa correspondente e não há operações pendentes. No macOS/Linux, o Python também pode identificar e encerrar apenas o processo separado `serial-monitor` do Arduino que esteja ocupando uma única porta candidata. Essa assistência não encerra a IDE nem o Chrome. Quando não consegue identificar o bloqueio com segurança, orienta a liberação manual.
+
+## 13. Como verificar a lógica
+
+Os testes usam relógio, pinos, EEPROM e serial simulados, permitindo avançar o tempo e conferir as saídas sem depender de uma montagem física.
+
+| Teste | O que verifica |
+| --- | --- |
+| `tests/firmware_test.cpp` | Ciclo, prioridade/fila, parada, conflito, debounce, validação de comandos, EEPROM e retorno do contador de tempo a zero. |
+| `tests/original_equivalence_test.cpp` | Executa original e USB com os mesmos botões e tempos de referência, comparando estados, saídas, fila, bloqueio e instantes das transições. |
+| `tests/test_app.py` | Servidor local, entrega dos arquivos, rotas e recuperação do Monitor Serial. |
+| `tests/browser_test.mjs` | Interface, apresentação e comunicação com uma porta USB simulada no Chrome. |
+
+Execute os testes Python e de firmware:
 
 ```sh
 python3 -B -m unittest discover -s tests -p test_app.py -v
@@ -178,28 +327,20 @@ clang++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -I tests t
 /tmp/fluxo-original-test
 ```
 
-A equivalência executa o original intacto e a versão USB com os tempos originais e os mesmos botões simulados: **36 cenários, 259.200 amostras**, comparando estados, oito saídas, fila, vias, bloqueio e instantes de transição. Os testes do firmware também verificam EEPROM, protocolo, restauração, debounce e rollover.
-
-Para os testes completos no Chrome, é necessário Node apenas no ambiente de desenvolvimento:
+O teste de equivalência cobre 36 cenários e 259.200 amostras. Para testar o navegador, é necessário Node no ambiente de desenvolvimento:
 
 ```sh
 node tests/browser_test.mjs
 ```
 
-Esse teste inicia o servidor Python, verifica a interface e usa uma porta USB simulada. `CHROME_PATH` permite informar o executável do Chrome; `PYTHON` permite selecionar o interpretador. As capturas e o `.ino` gerado vão para a pasta temporária `fluxo-test-artifacts`; `FLUXO_TEST_ARTIFACTS` permite mudar esse destino, sem preencher a pasta do projeto.
+`CHROME_PATH` define o executável do Chrome e `PYTHON` escolhe o interpretador. Os arquivos gerados vão para `fluxo-test-artifacts` na pasta temporária; `FLUXO_TEST_ARTIFACTS` permite mudar o destino. Caches, ambientes virtuais, fotos de referência e capturas locais ficam fora do Git pelo `.gitignore`.
 
-Os testes automatizados não fazem upload em placa física. A gravação e a leitura serial desta placa CH340 foram realizadas separadamente, com autorização. A montagem e os LEDs/botões reais continuam pendentes de conferência. A compilação do firmware para Uno foi aprovada: 6624 bytes de flash (20%) e 451 bytes de RAM estática (22%).
+O relatório de validação está em [`painel/relatorio-testes.txt`](painel/relatorio-testes.txt), também disponível no painel. Os testes automatizados não fazem upload no Uno nem substituem a conferência da montagem e dos LEDs/botões reais, que permanece pendente no relatório.
 
-Para iniciar o servidor sem navegador ou escolher a porta:
-
-```sh
-python3 app.py --no-browser --port 0
-```
-
-## Protocolo e referências
-
-USB a **115200 baud**, comandos terminados em `\n`: `HELLO`, `STATUS`, `PRIORITY A`, `PRIORITY B`, `STOP`, `AUTO`, `SET` com sete tempos em ms, `SAVE` e `DEFAULTS`. Respostas JSON: `config`, `status`, `event` e `ack`. O painel aguarda confirmação antes de anunciar sucesso; desconexão e timeout bloqueiam comandos. Encerrar a página ou o serviço não pausa a placa se ela continuar alimentada.
+## Referências
 
 - [Web Serial — Chrome](https://developer.chrome.com/docs/capabilities/serial/)
 - [Arduino Uno R3 — ficha técnica](https://docs.arduino.cc/resources/datasheets/A000066-datasheet.pdf)
 - [EEPROM — Arduino](https://docs.arduino.cc/learn/built-in-libraries/eeprom/)
+- [Arduino: dispositivos Unknown e conversores CH340](https://support.arduino.cc/hc/en-us/articles/16884223752220-If-there-are-Unknown-devices-in-the-board-selector-or-ports-without-a-board-name-in-the-Tools-Port-menu)
+- [Arduino: localizar processos que bloqueiam a porta](https://support.arduino.cc/hc/en-us/articles/4407830972050-Find-and-stop-process-blocking-a-port)
